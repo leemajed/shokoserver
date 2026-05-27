@@ -175,14 +175,27 @@ public class TmdbMetadataService : ITmdbMetadataService
 
     private readonly TMDB_Show_NetworkRepository _xrefTmdbShowNetwork;
 
+    private const string MissingApiKeyPlaceholder = "TMDB_API_KEY_GOES_HERE";
+
     private TMDbClient? _rawClient = null;
 
     // We lazy-init it on first use, this will give us time to set up the server before we attempt to init the tmdb client.
-    private TMDbClient CachedClient => _rawClient ??= new(_settingsProvider.GetSettings().TMDB.UserApiKey ?? (
-        Constants.TMDB.ApiKey != "TMDB_API_KEY_GOES_HERE"
-            ? Constants.TMDB.ApiKey
-            : throw new TmdbApiKeyUnavailableException()
-    ));
+    private TMDbClient CachedClient => _rawClient ??= new(GetApiKey());
+
+    private string GetApiKey()
+    {
+        var userApiKey = _settingsProvider.GetSettings().TMDB.UserApiKey;
+        if (IsValidApiKey(userApiKey))
+            return userApiKey!;
+
+        if (IsValidApiKey(Constants.TMDB.ApiKey))
+            return Constants.TMDB.ApiKey;
+
+        throw new TmdbApiKeyUnavailableException();
+    }
+
+    private static bool IsValidApiKey(string? apiKey)
+        => !string.IsNullOrWhiteSpace(apiKey) && apiKey != MissingApiKeyPlaceholder;
 
     // This policy will ensure only 10 requests can be in-flight at the same time.
     private readonly AsyncBulkheadPolicy _bulkheadPolicy;
@@ -233,6 +246,12 @@ public class TmdbMetadataService : ITmdbMetadataService
         catch (Exception ex)
         {
             var delta = DateTime.Now - now;
+            if (ex is TmdbApiKeyUnavailableException)
+            {
+                _logger.LogWarning(ex, "TMDB skipped because API key is unavailable. Skipped call: {DisplayName} (Waited {Waited}ms, Executed: {Delta}ms, {Attempts} attempts)", displayName, waitTime.TotalMilliseconds, delta.TotalMilliseconds, attempts);
+                return default;
+            }
+
             _logger.LogError(ex, "Failed call:    {DisplayName} (Waited {Waited}ms, Executed: {Delta}ms, {Attempts} attempts)", displayName, waitTime.TotalMilliseconds, delta.TotalMilliseconds, attempts);
             throw;
         }

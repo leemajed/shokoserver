@@ -69,8 +69,13 @@ public partial class TmdbSearchService : ITmdbSearchService
     internal async Task<(List<SearchMovie> Page, int TotalCount)> SearchMoviesRaw(string query, bool includeRestricted = false, int year = 0, int page = 1, int pageSize = 6)
     {
         var results = new List<SearchMovie>();
-        var firstPage = await _tmdbService.UseClient(c => c.SearchMovieAsync(query, 1, includeRestricted, year), $"Searching{(includeRestricted ? " all" : string.Empty)} movies for \"{query}\"{(year > 0 ? $" at year {year}" : string.Empty)}").ConfigureAwait(false) ??
-            throw new HttpRequestException(HttpRequestError.ConnectionError, "Failed to get search results");
+        var firstPage = await _tmdbService.UseClient(c => c.SearchMovieAsync(query, 1, includeRestricted, year), $"Searching{(includeRestricted ? " all" : string.Empty)} movies for \"{query}\"{(year > 0 ? $" at year {year}" : string.Empty)}").ConfigureAwait(false);
+        if (firstPage is null)
+        {
+            _logger.LogDebug("TMDB movie search skipped because API key is unavailable. Query: {Query}, Year: {Year}", query, year);
+            return (results, 0);
+        }
+
         var total = firstPage.TotalResults;
         if (total == 0)
             return (results, total);
@@ -83,8 +88,13 @@ public partial class TmdbSearchService : ITmdbSearchService
         var endPage = total == endIndex ? lastPage : Math.Min((int)Math.Floor((decimal)endIndex / actualPageSize) + (endIndex % actualPageSize > 0 ? 1 : 0), lastPage);
         for (var i = startPage; i <= endPage; i++)
         {
-            var actualPage = await _tmdbService.UseClient(c => c.SearchMovieAsync(query, i, includeRestricted, year), $"Searching{(includeRestricted ? " all" : string.Empty)} movies for \"{query}\"{(year > 0 ? $" at year {year}" : string.Empty)}").ConfigureAwait(false) ??
-                throw new HttpRequestException(HttpRequestError.ConnectionError, "Failed to get search results");
+            var actualPage = await _tmdbService.UseClient(c => c.SearchMovieAsync(query, i, includeRestricted, year), $"Searching{(includeRestricted ? " all" : string.Empty)} movies for \"{query}\"{(year > 0 ? $" at year {year}" : string.Empty)}").ConfigureAwait(false);
+            if (actualPage is null)
+            {
+                _logger.LogDebug("TMDB movie search page skipped because API key is unavailable. Query: {Query}, Year: {Year}, Page: {Page}", query, year, i);
+                break;
+            }
+
             results.AddRange(actualPage.Results!);
         }
 
@@ -284,8 +294,13 @@ public partial class TmdbSearchService : ITmdbSearchService
     internal async Task<(List<SearchTv> Page, int TotalCount)> SearchShowsRaw(string query, bool includeRestricted = false, int year = 0, int page = 1, int pageSize = 6)
     {
         var results = new List<SearchTv>();
-        var firstPage = await _tmdbService.UseClient(c => c.SearchTvShowAsync(query, 1, includeRestricted, year), $"Searching{(includeRestricted ? " all" : "")} shows for \"{query}\"{(year > 0 ? $" at year {year}" : "")}").ConfigureAwait(false) ??
-            throw new HttpRequestException(HttpRequestError.ConnectionError, "Failed to get search results");
+        var firstPage = await _tmdbService.UseClient(c => c.SearchTvShowAsync(query, 1, includeRestricted, year), $"Searching{(includeRestricted ? " all" : "")} shows for \"{query}\"{(year > 0 ? $" at year {year}" : "")}").ConfigureAwait(false);
+        if (firstPage is null)
+        {
+            _logger.LogDebug("TMDB show search skipped because API key is unavailable. Query: {Query}, Year: {Year}", query, year);
+            return (results, 0);
+        }
+
         var total = firstPage.TotalResults;
         if (total == 0)
             return (results, total);
@@ -298,8 +313,12 @@ public partial class TmdbSearchService : ITmdbSearchService
         var endPage = total == endIndex ? lastPage : Math.Min((int)Math.Floor((decimal)endIndex / actualPageSize) + (endIndex % actualPageSize > 0 ? 1 : 0), lastPage);
         for (var i = startPage; i <= endPage; i++)
         {
-            var actualPage = await _tmdbService.UseClient(c => c.SearchTvShowAsync(query, i, includeRestricted, year), $"Searching{(includeRestricted ? " all" : "")} shows for \"{query}\"{(year > 0 ? $" at year {year}" : "")}").ConfigureAwait(false) ??
-                throw new HttpRequestException(HttpRequestError.ConnectionError, "Failed to get search results");
+            var actualPage = await _tmdbService.UseClient(c => c.SearchTvShowAsync(query, i, includeRestricted, year), $"Searching{(includeRestricted ? " all" : "")} shows for \"{query}\"{(year > 0 ? $" at year {year}" : "")}").ConfigureAwait(false);
+            if (actualPage is null)
+            {
+                _logger.LogDebug("TMDB show search page skipped because API key is unavailable. Query: {Query}, Year: {Year}, Page: {Page}", query, year, i);
+                break;
+            }
 
             results.AddRange(actualPage.Results!);
         }

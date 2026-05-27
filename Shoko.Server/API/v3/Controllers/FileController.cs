@@ -1,11 +1,14 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.JsonPatch;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.ModelBinding;
@@ -56,6 +59,8 @@ public class FileController(
     ISettingsProvider settingsProvider
 ) : BaseController(settingsProvider)
 {
+    private const string MpvExecutablePath = @"C:\Users\Administrator\Downloads\mpv-hero-v1.0\mpv.exe";
+
     private const string FileUserStatsNotFoundWithFileID = "No FileUserStats entry for the given fileID for the current user";
 
     private const string FileNoPath = "Unable to resolve file location.";
@@ -73,6 +78,55 @@ public class FileController(
     internal const string FileLocationNotFoundWithLocationID = "No File.Location entry for the given locationID.";
 
     internal const string FileForbiddenForUser = "Accessing File is not allowed for the current user";
+
+    [NonAction]
+    private static object PlayMpvError(string error, string message)
+        => new { error, message };
+
+    [NonAction]
+    private static IPAddress NormalizeIpAddress(IPAddress ipAddress)
+        => ipAddress.IsIPv4MappedToIPv6 ? ipAddress.MapToIPv4() : ipAddress;
+
+    [NonAction]
+    private static StringComparison GetPathComparison()
+        => OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+
+    [NonAction]
+    private static bool IsPathInsideDirectory(string filePath, string directoryPath)
+    {
+        string resolvedFilePath;
+        string resolvedDirectoryPath;
+
+        try
+        {
+            resolvedFilePath = Path.GetFullPath(filePath);
+            resolvedDirectoryPath = Path.GetFullPath(directoryPath);
+        }
+        catch
+        {
+            return false;
+        }
+
+        if (!resolvedDirectoryPath.EndsWith(Path.DirectorySeparatorChar))
+            resolvedDirectoryPath += Path.DirectorySeparatorChar;
+
+        return resolvedFilePath.StartsWith(resolvedDirectoryPath, GetPathComparison());
+    }
+
+    [NonAction]
+    private bool IsLocalRequest()
+    {
+        var remoteIpAddress = HttpContext.Connection.RemoteIpAddress;
+        if (remoteIpAddress is null)
+            return false;
+
+        remoteIpAddress = NormalizeIpAddress(remoteIpAddress);
+        if (IPAddress.IsLoopback(remoteIpAddress))
+            return true;
+
+        var localIpAddress = HttpContext.Connection.LocalIpAddress;
+        return localIpAddress is not null && remoteIpAddress.Equals(NormalizeIpAddress(localIpAddress));
+    }
 
     /// <summary>
     /// Get or search through the files accessible to the current user.
@@ -640,6 +694,71 @@ public class FileController(
         var physicalFile = PhysicalFile(fileInfo.FullName, contentType, enableRangeProcessing: true);
         physicalFile.FileDownloadName = filename ?? fileInfo.Name;
         return physicalFile;
+    }
+
+    /// <summary>
+    /// Play a local video file with mpv.
+    /// </summary>
+    /// <param name="fileID">VideoLocal ID</param>
+    /// <returns>The result of launching mpv.</returns>
+    [Authorize("admin")]
+    [HttpPost("{fileID:int}/play-mpv")]
+    [HttpPost("/api/v{version:apiVersion}/files/{fileID:int}/play-mpv")]
+    public ActionResult PlayFileWithMpv([FromRoute, Range(1, int.MaxValue)] int fileID)
+    {
+        if (HttpContext.GetUser() is null)
+            return Unauthorized(PlayMpvError("unauthorized", "Admin authentication is required."));
+
+        if (!IsLocalRequest())
+            return StatusCode(StatusCodes.Status403Forbidden, PlayMpvError("local_only", "This endpoint can only be called from localhost or another loopback address."));
+
+        var file = RepoFactory.VideoLocal.GetByID(fileID);
+        if (file == null)
+            return NotFound(PlayMpvError("file_not_found", FileNotFoundWithFileID));
+
+        var fileLocation = file.FirstResolvedPlace;
+        var filePath = fileLocation?.Path;
+        if (string.IsNullOrWhiteSpace(filePath))
+            return NotFound(PlayMpvError("file_not_found", "Unable to resolve an existing local file path for the given fileID."));
+
+        if (!System.IO.File.Exists(filePath))
+            return NotFound(PlayMpvError("file_not_found", $"Video file does not exist on disk: {filePath}"));
+
+        if (!_videoService.IsAllowedVideoExtension(filePath))
+            return BadRequest(PlayMpvError("invalid_file_type", $"The file extension is not configured as a Shoko video extension: {Path.GetExtension(filePath)}"));
+
+        var managedFolderPath = fileLocation?.ManagedFolder?.Path;
+        if (string.IsNullOrWhiteSpace(managedFolderPath) || !IsPathInsideDirectory(filePath, managedFolderPath))
+            return StatusCode(StatusCodes.Status403Forbidden, PlayMpvError("file_outside_library", "The resolved file path is outside its Shoko managed folder."));
+
+        if (!System.IO.File.Exists(MpvExecutablePath))
+            return NotFound(PlayMpvError("mpv_not_found", $"mpv.exe was not found at: {MpvExecutablePath}"));
+
+        try
+        {
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = MpvExecutablePath,
+                UseShellExecute = false,
+            };
+            startInfo.ArgumentList.Add("--fs");
+            startInfo.ArgumentList.Add(filePath);
+
+            var process = Process.Start(startInfo);
+            if (process is null)
+                return InternalError("Failed to start mpv.exe.");
+        }
+        catch (Exception ex)
+        {
+            return InternalError($"Failed to start mpv.exe: {ex.Message}");
+        }
+
+        return Ok(new
+        {
+            Message = "mpv.exe started.",
+            FileID = fileID,
+            FilePath = filePath,
+        });
     }
 
     /// <summary>
