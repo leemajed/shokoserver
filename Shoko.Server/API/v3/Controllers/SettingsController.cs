@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.AspNetCore.Authorization;
@@ -6,6 +7,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.ModelBinding;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using Shoko.Abstractions.Config;
 using Shoko.Abstractions.Config.Exceptions;
 using Shoko.Abstractions.Web.Attributes;
@@ -55,8 +57,21 @@ public class SettingsController(ISettingsProvider settingsProvider, Configuratio
     {
         try
         {
+            if (settings.Operations.Count == 0)
+                return Ok();
+
+            if (TryGetInvalidWebUiSettingsPatch(settings, out var error))
+                return BadRequest(new
+                {
+                    error = "invalid_webui_settings",
+                    message = error,
+                });
+
             var existingSettings = (ServerSettings)SettingsProvider.GetSettings(copy: true);
             settings.ApplyTo(existingSettings, ModelState);
+            if (!ModelState.IsValid)
+                return ValidationProblem(ModelState);
+
             SettingsProvider.SaveSettings(existingSettings);
             return Ok();
         }
@@ -64,6 +79,75 @@ public class SettingsController(ISettingsProvider settingsProvider, Configuratio
         {
             return ValidationProblem(ex.ValidationErrors);
         }
+        catch (JsonReaderException ex)
+        {
+            _logger.LogWarning(ex, "Invalid settings JSON patch payload.");
+            return BadRequest(new
+            {
+                error = "invalid_settings_json",
+                message = "The settings payload contains invalid JSON.",
+            });
+        }
+    }
+
+    private static bool TryGetInvalidWebUiSettingsPatch(JsonPatchDocument<ServerSettings> settings, out string error)
+    {
+        foreach (var operation in settings.Operations)
+        {
+            if (!string.Equals(operation.path, "/WebUI_Settings", StringComparison.Ordinal))
+                continue;
+
+            if (string.Equals(operation.op, "remove", StringComparison.OrdinalIgnoreCase))
+            {
+                error = "WebUI_Settings cannot be removed.";
+                return true;
+            }
+
+            if (!string.Equals(operation.op, "add", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(operation.op, "replace", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            if (!TryGetStringValue(operation.value, out var value) || string.IsNullOrWhiteSpace(value))
+            {
+                error = "WebUI_Settings must be a non-empty stringified JSON object.";
+                return true;
+            }
+
+            try
+            {
+                if (JToken.Parse(value) is not JObject)
+                {
+                    error = "WebUI_Settings must contain a stringified JSON object.";
+                    return true;
+                }
+            }
+            catch (JsonReaderException)
+            {
+                error = "WebUI_Settings contains invalid JSON.";
+                return true;
+            }
+        }
+
+        error = string.Empty;
+        return false;
+    }
+
+    private static bool TryGetStringValue(object value, out string stringValue)
+    {
+        if (value is string directValue)
+        {
+            stringValue = directValue;
+            return true;
+        }
+
+        if (value is JValue { Type: JTokenType.String, Value: string tokenValue })
+        {
+            stringValue = tokenValue;
+            return true;
+        }
+
+        stringValue = string.Empty;
+        return false;
     }
 
     /// <summary>

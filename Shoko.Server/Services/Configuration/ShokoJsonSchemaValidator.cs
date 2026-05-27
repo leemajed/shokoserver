@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using NJsonSchema;
 using NJsonSchema.Validation;
@@ -121,18 +122,28 @@ public partial class ShokoJsonSchemaValidator<TConfig>(ILogger logger, Configura
                 )
                 {
                     // If the value is different from what we expect, then add an error, otherwise
-                    if (!string.Equals(tuple.Override, token?.ToJson(), StringComparison.Ordinal))
+                    if (!string.Equals(tuple.Override, token?.ToJson(), StringComparison.Ordinal) && !string.Equals(tuple.Original, token?.ToJson(), StringComparison.Ordinal))
                     {
                         errors.Add(new ValidationError((ValidationErrorKind)1_001, propertyName, propertyPath, token, schema));
                     }
                     // remove or revert the token if we're saving and the override is different from the original value.
                     else if (_saveValidation && !string.Equals(tuple.Original, tuple.Override, StringComparison.Ordinal))
-                    {
-                        if (tuple.Original is null)
+                        if (string.IsNullOrWhiteSpace(tuple.Original) || tuple.Original == "null")
+                        {
                             ((JObject)parentToken!).Remove(propertyName!);
+                        }
                         else
-                            token!.Replace(JToken.Parse(tuple.Original));
-                    }
+                        {
+                            try
+                            {
+                                token!.Replace(JToken.Parse(tuple.Original));
+                            }
+                            catch (JsonReaderException ex)
+                            {
+                                _logger.LogWarning(ex, "Unable to restore original environment-backed value for {PropertyPath}. Removing the property instead.", propertyPath);
+                                ((JObject)parentToken!).Remove(propertyName!);
+                            }
+                        }
                 }
 
                 if (_saveValidation && uiDefinition.TryGetValue(ShokoJsonSchemaGenerator.ElementRequiresRestart, out var prop2) && prop2 is true)
