@@ -112,10 +112,17 @@ public class UserService(
         {
             try
             {
-                var image = updateData.AvatarImageAsStream is { } stream
-                    ? _imageManager.UploadImage(stream)
-                    : _imageManager.UploadImage(updateData.AvatarImage!);
-                _imageManager.SetPreferredImageForEntity(user, ImageEntityType.Primary, image);
+                if (updateData.HasAvatarImage)
+                {
+                    var image = updateData.AvatarImageAsStream is { } stream
+                        ? _imageManager.UploadImage(stream)
+                        : _imageManager.UploadImage(updateData.AvatarImage!);
+                    _imageManager.SetPreferredImageForEntity(user, ImageEntityType.Primary, image);
+                }
+                else
+                {
+                    _imageManager.UnsetAllPreferredImagesForEntity(user);
+                }
             }
             catch (ArgumentException ex)
             {
